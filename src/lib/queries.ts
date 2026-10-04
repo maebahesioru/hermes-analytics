@@ -22,7 +22,7 @@ export interface Totals {
 }
 
 export function totals(): Totals {
-  return cached("totals", 60_000, () => {
+  return cached("totals", 300_000, () => {
     const s = get<{
       sessions: number;
       in_tok: number;
@@ -67,7 +67,7 @@ export interface Trend {
 }
 
 export function messageTrend(): Trend {
-  return cached("trend:msg", 60_000, () => {
+  return cached("trend:msg", 300_000, () => {
     const now = Math.floor(Date.now() / 1000);
     return get<Trend>(
       `SELECT COALESCE(SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END),0) AS cur,
@@ -79,7 +79,7 @@ export function messageTrend(): Trend {
 }
 
 export function sessionTrend(): Trend {
-  return cached("trend:sess", 60_000, () => {
+  return cached("trend:sess", 300_000, () => {
     const now = Math.floor(Date.now() / 1000);
     return get<Trend>(
       `SELECT COALESCE(SUM(CASE WHEN started_at >= ? THEN 1 ELSE 0 END),0) AS cur,
@@ -98,7 +98,7 @@ export interface DayMsg {
 }
 
 export function dailyMessages(days: number | null): DayMsg[] {
-  return cached(`dailyMsg:${days ?? "all"}`, 30_000, () => {
+  return cached(`dailyMsg:${days ?? "all"}`, 300_000, () => {
     const cond = days
       ? `WHERE timestamp >= ${Math.floor(Date.now() / 1000) - days * 86400}`
       : "";
@@ -118,7 +118,7 @@ export interface DaySess {
 }
 
 export function dailySessions(days: number | null): DaySess[] {
-  return cached(`dailySess:${days ?? "all"}`, 30_000, () => {
+  return cached(`dailySess:${days ?? "all"}`, 300_000, () => {
     const cond = days
       ? `WHERE started_at >= ${Math.floor(Date.now() / 1000) - days * 86400}`
       : "";
@@ -178,7 +178,7 @@ export interface HeatCell {
 }
 
 export function heatmap(): HeatCell[] {
-  return cached("heatmap", 180_000, () =>
+  return cached("heatmap", 1_800_000, () =>
     all<HeatCell>(
       `SELECT CAST(strftime('%w', timestamp,'unixepoch','${TZ}') AS INTEGER) AS wd,
               CAST(strftime('%H', timestamp,'unixepoch','${TZ}') AS INTEGER) AS hr,
@@ -200,7 +200,7 @@ export interface ModelStat {
 }
 
 export function modelStats(limit = 100): ModelStat[] {
-  return cached(`models:${limit}`, 60_000, () =>
+  return cached(`models:${limit}`, 600_000, () =>
     all<ModelStat>(
       `SELECT COALESCE(NULLIF(model,''),'(unknown)') AS model,
               COALESCE(SUM(api_call_count),0) AS api,
@@ -221,7 +221,7 @@ export interface SourceStat {
 }
 
 export function sourceStats(): SourceStat[] {
-  return cached("sources", 60_000, () =>
+  return cached("sources", 600_000, () =>
     all<SourceStat>(
       `SELECT s.source AS source,
               COUNT(*) AS sessions,
@@ -240,7 +240,7 @@ export interface ToolStat {
 }
 
 export function toolStats(limit = 200): ToolStat[] {
-  return cached(`tools:${limit}`, 60_000, () =>
+  return cached(`tools:${limit}`, 600_000, () =>
     all<ToolStat>(
       `SELECT tool_name,
               COUNT(*) AS calls,
@@ -363,7 +363,7 @@ export function facets(): {
   sources: { v: string; n: number }[];
   models: { v: string; n: number }[];
 } {
-  return cached("facets", 120_000, () => ({
+  return cached("facets", 1_800_000, () => ({
     sources: all<{ v: string; n: number }>(
       `SELECT source AS v, COUNT(*) AS n FROM sessions GROUP BY source ORDER BY n DESC`,
     ),
@@ -508,31 +508,33 @@ export function toolDetail(name: string): {
   }[];
   meta: { calls: number; sessions: number; first: number; last: number };
 } {
-  const weekly = all<{ wk: string; c: number }>(
-    `SELECT date(timestamp,'unixepoch','${TZ}','weekday 0','-6 days') AS wk, COUNT(*) AS c
-     FROM messages WHERE tool_name = ? GROUP BY wk ORDER BY wk`,
-    [name],
-  );
-  const recent = all<{
-    id: number;
-    session_id: string;
-    timestamp: number;
-    snip: string;
-    title: string | null;
-  }>(
-    `SELECT m.id, m.session_id, m.timestamp, substr(COALESCE(m.content,''),1,180) AS snip, s.title
-     FROM messages m JOIN sessions s ON s.id = m.session_id
-     WHERE m.tool_name = ? AND m.active = 1
-     ORDER BY m.timestamp DESC LIMIT 40`,
-    [name],
-  );
-  const meta = get<{ calls: number; sessions: number; first: number; last: number }>(
-    `SELECT COUNT(*) AS calls, COUNT(DISTINCT session_id) AS sessions,
-            MIN(timestamp) AS first, MAX(timestamp) AS last
-     FROM messages WHERE tool_name = ?`,
-    [name],
-  )!;
-  return { weekly, recent, meta };
+  return cached(`toolDetail:${name}`, 600_000, () => {
+    const weekly = all<{ wk: string; c: number }>(
+      `SELECT date(timestamp,'unixepoch','${TZ}','weekday 0','-6 days') AS wk, COUNT(*) AS c
+       FROM messages WHERE tool_name = ? GROUP BY wk ORDER BY wk`,
+      [name],
+    );
+    const recent = all<{
+      id: number;
+      session_id: string;
+      timestamp: number;
+      snip: string;
+      title: string | null;
+    }>(
+      `SELECT m.id, m.session_id, m.timestamp, substr(COALESCE(m.content,''),1,180) AS snip, s.title
+       FROM messages m JOIN sessions s ON s.id = m.session_id
+       WHERE m.tool_name = ? AND m.active = 1
+       ORDER BY m.timestamp DESC LIMIT 40`,
+      [name],
+    );
+    const meta = get<{ calls: number; sessions: number; first: number; last: number }>(
+      `SELECT COUNT(*) AS calls, COUNT(DISTINCT session_id) AS sessions,
+              MIN(timestamp) AS first, MAX(timestamp) AS last
+       FROM messages WHERE tool_name = ?`,
+      [name],
+    )!;
+    return { weekly, recent, meta };
+  });
 }
 
 // ---------------------------------------------------------------- Search
@@ -585,5 +587,61 @@ export function searchMessages(
       [q, q, ...params],
     );
     return { rows, truncated: rows.length >= limit };
+  });
+}
+
+// ---------------------------------------------------------------- Warmup
+
+/**
+ * 起動時ウォーム: 重い集計をバックグラウンドで先に回してキャッシュに載せる。
+ * 1件ずつ setTimeout で挟むので、サーバーはウォーム中でもリクエストを処理できる。
+ * 完了時に resolve（instrumentation がルート先読みを続けて実行する）。
+ */
+export function warmCaches(): Promise<void> {
+  const jobs: (() => unknown)[] = [
+    () => totals(),
+    () => messageTrend(),
+    () => sessionTrend(),
+    () => dailyMessages(7),
+    () => dailyMessages(30),
+    () => dailyMessages(90),
+    () => dailyMessages(null),
+    () => dailySessions(7),
+    () => dailySessions(30),
+    () => dailySessions(90),
+    () => dailySessions(null),
+    () => heatmap(),
+    () => modelStats(12),
+    () => sourceStats(),
+    () => toolStats(15),
+    () => toolStats(300),
+    () => facets(),
+  ];
+  // よく開かれるツール詳細（TOP5）も先に温める
+  try {
+    for (const t of toolStats(300).slice(0, 5)) {
+      jobs.push(() => toolDetail(t.tool_name));
+    }
+  } catch {
+    /* ignore */
+  }
+  return new Promise((resolve) => {
+    let i = 0;
+    const next = () => {
+      if (i >= jobs.length) {
+        resolve();
+        return;
+      }
+      const job = jobs[i++];
+      setTimeout(() => {
+        try {
+          job();
+        } catch {
+          /* ウォーム失敗は致命的ではない */
+        }
+        next();
+      }, 5);
+    };
+    next();
   });
 }
